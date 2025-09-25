@@ -1,1 +1,869 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Forge Viewer – HVAC Focus + Full Architecture with IfcGeographicElementType (No IoT)</title>
+  <!-- Forge Viewer (specific version 7.93 for stability) -->
+  <script src="https://developer.api.autodesk.com/modelderivative/v2/viewers/7.93/viewer3D.min.js" onerror="console.error('Failed to load Forge Viewer script'); alert('Failed to load Forge Viewer script. Please check your network or CDN availability.');"></script>
+  <link rel="stylesheet" href="https://developer.api.autodesk.com/modelderivative/v2/viewers/7.93/style.min.css" onerror="console.error('Failed to load Forge Viewer CSS');" />
+  <!-- Bootstrap Icons -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" onerror="console.error('Failed to load Bootstrap Icons CSS');" />
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    #viewer { width: 100vw; height: 100vh; }
+    #viewable-selector {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 1000;
+      padding: 6px;
+      font-size: 14px;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+    }
+    #design-info {
+      position: absolute;
+      display: none;
+      background: #2d2f33;
+      border: none;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+      color: #e6e6e6;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      font-size: 14px;
+      max-width: 450px;
+      z-index: 999;
+      pointer-events: auto;
+      padding: 0;
+      user-select: none;
+    }
+    #design-info h3 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      cursor: move;
+      background-color: #1f2124;
+      color: #f0f0f0;
+      padding: 10px 12px;
+      border-radius: 8px 8px 0 0;
+    }
+    #design-info .props {
+      max-height: 300px;
+      overflow: auto;
+      padding: 6px 0;
+    }
+    #design-info .props::-webkit-scrollbar { width: 8px; }
+    #design-info .props::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.15);
+      border-radius: 8px;
+    }
+    #design-info .props::-webkit-scrollbar-track { background: transparent; }
+    #design-info .prop {
+      margin: 0;
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    #design-info .prop:last-child { border-bottom: none; }
+    #design-info .prop b {
+      display: inline-block;
+      min-width: 0;
+      flex: 1;
+      color: #cfd3dc;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #design-info .prop .val {
+      flex: 0 0 auto;
+      max-width: none;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #ffffff;
+      font-weight: 500;
+    }
+    .adsk-control-group .adsk-button { min-width: 34px; }
+    .custom-icon {
+      width: 24px;
+      height: 24px;
+      display: inline-block;
+      vertical-align: middle;
+    }
+    .adsk-button.visible .custom-icon path { fill: #ffffff; }
+    .adsk-button:not(.visible) .custom-icon path { fill: #808080; }
+  </style>
+</head>
+<body>
+  <div id="viewer"></div>
+  <div id="design-info"></div>
+  <select id="viewable-selector">
+    <option>Loading views...</option>
+  </select>
+  <script>
+    if (typeof Autodesk === 'undefined' || !Autodesk.Viewing) {
+      console.error('Autodesk Forge Viewer not loaded');
+      alert('Forge Viewer library failed to load. Please check network or CDN.');
+    }
+    const fmt = (v, decimals = 3) =>
+      Math.round((v + Number.EPSILON) * Math.pow(10, decimals)) / Math.pow(10, decimals);
+    function getScreenCoordinates(viewer, dbId, lastMouseEvent) {
+      try {
+        const model = viewer.model;
+        if (!model || !model.getData()) return null;
+        const data = model.getData();
+        const tree = data.instanceTree;
+        if (!tree) return null;
+        const fragList = viewer.impl.getFragmentList();
+        const fragIds = [];
+        tree.enumNodeFragments(dbId, fid => fragIds.push(fid));
+        if (fragIds.length) {
+          const box = new THREE.Box3();
+          let hasAny = false;
+          const tmp = new THREE.Box3();
+          for (const fragId of fragIds) {
+            const proxy = viewer.impl.getFragmentProxy(model, fragId);
+            if (proxy && typeof proxy.getWorldBounds === 'function') {
+              proxy.getWorldBounds(tmp);
+              box.union(tmp);
+              hasAny = true;
+            } else if (fragList && typeof fragList.getWorldBounds === 'function') {
+              fragList.getWorldBounds(fragId, tmp);
+              box.union(tmp);
+              hasAny = true;
+            }
+          }
+          if (hasAny) {
+            const center = box.getCenter(new THREE.Vector3());
+            const pt = viewer.worldToClient(center);
+            if (pt && Number.isFinite(pt.x) && Number.isFinite(pt.y)) {
+              return pt;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('getScreenCoordinates error:', e);
+      }
+      if (lastMouseEvent) {
+        return { x: lastMouseEvent.clientX, y: lastMouseEvent.clientY };
+      }
+      const safeX = Math.min(window.innerWidth - 470, Math.max(10, (lastMouseEvent ? lastMouseEvent.clientX : 0)));
+      const safeY = Math.min(window.innerHeight - 100, Math.max(10, (lastMouseEvent ? lastMouseEvent.clientY : 50)));
+      return { x: safeX, y: safeY };
+    }
+    class HvacDesignPropsExtension extends Autodesk.Viewing.Extension {
+      constructor(viewer, options) {
+        super(viewer, options);
+        this.componentTypes = {
+          "placeholder_heat_generator_2": "heat_generator",
+          "placeholder_pump_1": "pump",
+          "placeholder_pump_2": "pump",
+          "placeholder_valve_1": "valve",
+          "placeholder_valve_2": "valve",
+          // Walls (Wände) IDs
+          "2s3XzXkUf8_8QJXv6ypPqp": "wand",
+          "2s3XzXkUf8_8QJXv6ypPoV": "wand",
+          "2s3XzXkUf8_8QJXv6ypPpE": "wand",
+          "2s3XzXkUf8_8QJXv6ypPpm": "wand",
+          "2s3XzXkUf8_8QJXv6ypPlU": "wand",
+          "2s3XzXkUf8_8QJXv6ypPly": "wand",
+          "2s3XzXkUf8_8QJXv6ypPiX": "wand",
+          "2s3XzXkUf8_8QJXv6yoa04": "wand",
+          "3jsW7h$a55qep2UmWa7T7x": "wand",
+          "3jsW7h$a55qep2UmWa7TGG": "wand",
+          "3jsW7h$a55qep2UmWa7TJA": "wand",
+          "3jsW7h$a55qep2UmWa7TMM": "wand",
+          "3jsW7h$a55qep2UmWa7To6": "wand",
+          "3jsW7h$a55qep2UmWa7U9S": "wand"
+        };
+        this._hvacIfcGUIDs = Object.keys(this.componentTypes).filter(g =>
+          ['radiator', 'pipe', 'fitting', 'heat_generator', 'pump', 'valve'].includes(this.componentTypes[g])
+        );
+        this._archIfcGUIDs = Object.keys(this.componentTypes).filter(g =>
+          ['wand'].includes(this.componentTypes[g])
+        );
+        this.radiatorDesignProperties = [
+          { label: 'Raum', property: 'LIN_ROOM_NAME', unit: '' },
+          { label: 'Raum Nummer', property: 'LIN_ROOM_NUMBER', unit: '' },
+          { label: 'Heizleistung', property: 'LIN_HT_DESIGN_HEATRATE', unit: 'W' },
+          { label: 'Massenstrom', property: 'LIN_HT_MASSFLOWRATE', unit: 'kg/h' },
+          { label: 'Kv-Wert', property: 'LIN_HT_KV_VALUE_THV', unit: 'm³/h' },
+          { label: 'Ventileinstellung', property: 'LIN_HT_SETTING_THV', unit: '' }
+        ];
+        this.pipeDesignProperties = [
+          { label: 'System', property: 'Systemklassifizierung', unit: '' },
+          { label: 'Durchmesser', property: 'LIN_HT_LEG_DN', unit: 'mm' },
+          { label: 'Massenstrom', property: 'LIN_HT_MASSFLOWRATE_PEAK', unit: 'kg/h' },
+          { label: 'Druckverlust', property: 'LIN_HT_PRESSURE_DIFFERENCE_PIPE', unit: 'Pa' }
+        ];
+        this.fittingDesignProperties = [
+          { label: 'System', property: 'Systemklassifizierung', unit: '' },
+          { label: 'Durchmesser', property: 'LIN_HT_LEG_DN', unit: 'mm' },
+          { label: 'Massenstrom', property: 'LIN_HT_FLOWRATE', unit: 'kg/h' },
+          { label: 'Druckverlust', property: 'LIN_HT_PRESSURE_DIFFERENCE', unit: 'Pa' }
+        ];
+        this.heatGeneratorDesignProperties = [
+          { label: 'Heizleistung', property: 'LIN_HT_DESIGN_HEATRATE', unit: 'W' },
+          { label: 'Massenstrom', property: 'LIN_HT_MASSFLOWRATE', unit: 'kg/h' }
+        ];
+        this.geschossdeckeDesignProperties = [
+          { label: 'Raum', property: 'DT_Raumname', unit: '' },
+          { label: 'Raumnummer', property: 'DT_Raumnummer', unit: '' },
+          { label: 'Fläche', property: 'DT_Fläche', unit: 'm²' },
+          { label: 'Heizlast', property: 'DT_Heizlast', unit: 'W' },
+          { label: 'Normtemperatur', property: 'DT_Normtemperatur', unit: '°C' }
+        ];
+        this.wandDesignProperties = [
+          { label: 'Fläche', property: 'Fläche', unit: 'm²' },
+          { label: 'U-Wert', property: 'LIN_BA_U_VALUE', unit: 'W/(m²×K)' }
+        ];
+        this.doorDesignProperties = [
+          { label: 'U-Wert', property: 'LIN_BA_U_VALUE', unit: 'W/(m²×K)' },
+          { label: 'Höhe', property: 'Angabe Lichter Durchgang Höhe', unit: 'mm' },
+          { label: 'Breite', property: 'Angabe Lichter Durchgang Breite', unit: 'mm' }
+        ];
+        this.windowDesignProperties = [
+          { label: 'U-Wert', property: 'LIN_BA_U_VALUE', unit: 'W/(m²×K)' },
+          { label: 'Höhe', property: 'Höhe', unit: 'mm' },
+          { label: 'Breite', property: 'Breite', unit: 'mm' }
+        ];
+        this.stairDesignProperties = [
+          { label: 'Typ', property: 'Typ', unit: '' }
+        ];
+        this.sanitaryDesignProperties = [
+          { label: 'Typ', property: 'Typ', unit: '' }
+        ];
+        this.lightDesignProperties = [
+          { label: 'Typ', property: 'Typ', unit: '' }
+        ];
+        this.soilDesignProperties = [
+          { label: 'Norm Außentemperatur', property: 'DT_Normaußentemperatur', unit: '°C' }
+        ];
+        this.pumpDesignProperties = ['PumpProperty1', 'PumpProperty2'];
+        this.valveDesignProperties = ['ValveProperty1', 'ValveProperty2'];
+
+        /* NEW: slab (IfcSlab/IfcSlabType) shows U-value like doors/windows */
+        this.slabDesignProperties = [
+          { label: 'U-Wert', property: 'LIN_BA_U_VALUE', unit: 'W/(m²×K)' }
+        ];
+
+        /* NEW: roof (IfcRoof/IfcRoofType) shows U-value like slab */
+        this.roofDesignProperties = [
+          { label: 'U-Wert', property: 'LIN_BA_U_VALUE', unit: 'W/(m²×K)' }
+        ];
+
+        this._allDbIds = [];
+        this._hvacDbIds = [];
+        this._archDbIds = [];
+        this._heatingVisible = true;
+        this._archVisible = true;
+        this._toggleArchBtn = null;
+        this._toggleHvacBtn = null;
+        this._lastMouseEvent = null;
+        this._exportTypeMap = null;
+        this.onSelectionChanged = this.onSelectionChanged.bind(this);
+        this.onMouseClick = this.onMouseClick.bind(this);
+      }
+      load() {
+        try {
+          this.viewer.addEventListener(Autodesk.Viewing.SELECTION_CHANGED_EVENT, this.onSelectionChanged);
+          this.viewer.canvas.addEventListener('click', this.onMouseClick);
+          return true;
+        } catch (err) {
+          console.error('Error loading extension:', err);
+          return false;
+        }
+      }
+      unload() {
+        try {
+          this.viewer.removeEventListener(Autodesk.Viewing.SELECTION_CHANGED_EVENT, this.onSelectionChanged);
+          this.viewer.canvas.removeEventListener('click', this.onMouseClick);
+          return true;
+        } catch (err) {
+          console.error('Error unloading extension:', err);
+          return false;
+        }
+      }
+      onMouseClick(event) {
+        this._lastMouseEvent = event;
+      }
+      _normalizeKey(str) {
+        return (str || '')
+          .toString()
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, ' ')
+          .replace(/[^\w()/\-]+/g, '');
+      }
+      _getIfcExportType(dbId) {
+        return new Promise((resolve) => {
+          try {
+            if (!this.viewer.model) return resolve(null);
+            this.viewer.getProperties(dbId, (res) => {
+              const props = res?.properties || [];
+              const wanted = 'Typ in IFC exportieren als';
+              for (const p of props) {
+                if (p.displayName === wanted) {
+                  return resolve(p.displayValue || null);
+                }
+              }
+              resolve(null);
+            }, () => resolve(null));
+          } catch (err) {
+            console.warn(`Error fetching IFC export type for dbId ${dbId}:`, err);
+            resolve(null);
+          }
+        });
+      }
+      _mapExportTypeToSubtype(raw) {
+        if (!raw) return null;
+        const k = this._normalizeKey(raw);
+        if (/(IfcSpaceHeaterType|ifcspaceheatertype)/.test(k)) return 'radiator';
+        if (/(IfcPipeSegmentType|rohr|pipe)/.test(k)) return 'pipe';
+        if (/(IfcPipeFittingType|fitting)/.test(k)) return 'fitting';
+        if (/(IfcBoilerType|ifcboilertype)/.test(k)) return 'heat_generator';
+        if (/(ifcvalve|valve|ventil)/.test(k)) return 'valve';
+        if (/(ifcpump|pump)/.test(k)) return 'pump';
+        if (/(ifcwall|wand)/.test(k)) return 'wand';
+
+        /* Split coverings, slabs, roofs:
+           - IfcCovering/IfcCoveringType -> geschossdecke (existing DT_* props)
+           - IfcSlab/IfcSlabType        -> slab (U-value like doors/windows)
+           - IfcRoof/IfcRoofType        -> roof (U-value like slab)
+        */
+        if (/(ifccoveringtype|ifccovering|covering)/.test(k)) return 'geschossdecke';
+        if (/(ifcslabtype|ifcslab)/.test(k)) return 'slab';
+        if (/(ifcrooftype|ifcroof|roof|dach)/.test(k)) return 'roof';
+
+        if (/(ifcdoortype|ifcdoor|door|tür)/.test(k)) return 'door';
+        if (/(ifcwindow|window|fenster)/.test(k)) return 'window';
+        if (/(ifcstair|ifcstairflight|stair|treppe)/.test(k)) return 'stair';
+        if (/(ifclamptype|light|leuchte)/.test(k)) return 'light';
+        if (/(ifcsanitaryterminaltype|sanitary|sanitärelement)/.test(k)) return 'sanitary';
+        if (/(ifcgeographicelementtype|soil|boden)/.test(k)) return 'soil';
+        return null;
+      }
+      async _resolveTypeFor(dbId, ifcGuid) {
+        try {
+          const viaGuid = this.componentTypes[ifcGuid];
+          if (viaGuid) return viaGuid;
+          let raw = this._exportTypeMap?.get(dbId);
+          if (raw == null) {
+            raw = await this._getIfcExportType(dbId);
+          }
+          return this._mapExportTypeToSubtype(raw) || null;
+        } catch (err) {
+          console.warn(`Error resolving type for dbId ${dbId}, IfcGUID ${ifcGuid}:`, err);
+          return null;
+        }
+      }
+      async _buildExportTypeMapBulk(dbIds) {
+        try {
+          const model = this.viewer.model;
+          if (!model) {
+            console.warn('Model not available for bulk properties');
+            return new Map();
+          }
+          const CHUNK = 2000;
+          const propFilter = [
+            'Typ in IFC exportieren als',
+            'IFC exportieren als',
+            'IFC export as',
+            'IFC Export As',
+            'IFC Export Type'
+          ];
+          const norm = (s) => (s || '').toString().trim().toLowerCase();
+          const isExportName = (p) => {
+            const dn = norm(p.displayName);
+            if (dn === 'typ in ifc exportieren als') return true;
+            if (dn === 'ifc exportieren als') return true;
+            if (dn === 'ifc export as') return true;
+            if (dn === 'ifc export type') return true;
+            const an = norm(p.attributeName);
+            if (an === 'ifcexportas' || an === 'ifcexporttype') return true;
+            return false;
+          };
+          const map = new Map();
+          for (let i = 0; i < dbIds.length; i += CHUNK) {
+            const slice = dbIds.slice(i, i + CHUNK);
+            await new Promise((resolve) => {
+              model.getBulkProperties(
+                slice,
+                propFilter,
+                (results) => {
+                  for (const r of (results || [])) {
+                    let val = null;
+                    for (const p of (r.properties || [])) {
+                      if (isExportName(p)) { val = p.displayValue ?? null; break; }
+                    }
+                    if (val != null) map.set(r.dbId, val);
+                  }
+                  resolve();
+                },
+                (err) => {
+                  console.warn('Bulk properties failed for chunk:', err);
+                  resolve();
+                }
+              );
+            });
+          }
+          this._exportTypeMap = map;
+          console.log('Export type map built, size:', map.size);
+          return map;
+        } catch (err) {
+          console.error('Error in _buildExportTypeMapBulk:', err);
+          return new Map();
+        }
+      }
+      async computeDbIdSets() {
+        try {
+          console.log('Starting computeDbIdSets');
+          this._allDbIds = await this.getAllDbIds();
+          console.log('All dbIds retrieved:', this._allDbIds.length);
+          if (!this._allDbIds.length) {
+            console.warn('No dbIds found in model');
+            return;
+          }
+          const hvacByType = { radiator: [], pipe: [], fitting: [], heat_generator: [], valve: [], pump: [] };
+
+          /* Include 'slab' and 'roof' separately from 'geschossdecke' */
+          const archByType = { geschossdecke: [], slab: [], roof: [], wand: [], door: [], window: [], stair: [], light: [], sanitary: [], soil: [] };
+
+          console.log('Building export type map...');
+          const exportMap = await this._buildExportTypeMapBulk(this._allDbIds);
+          console.log('Export type map built, size:', exportMap.size);
+          for (const id of this._allDbIds) {
+            const raw = exportMap.get(id);
+            if (!raw) continue;
+            const subtype = this._mapExportTypeToSubtype(raw);
+            if (!subtype) continue;
+
+            /* 'geschossdecke', 'slab', and 'roof' are all architectural */
+            if (['wand', 'geschossdecke', 'slab', 'roof', 'door', 'window', 'stair', 'light', 'sanitary', 'soil'].includes(subtype)) {
+              archByType[subtype].push(id);
+            } else if (hvacByType[subtype]) {
+              hvacByType[subtype].push(id);
+            }
+          }
+          console.log('Parameter-based grouping:', { hvac: hvacByType, arch: archByType });
+          const hvacDbIdsFromGuids = [];
+          for (const guid of this._hvacIfcGUIDs) {
+            const id = await this.findDbIdByIfcGUID(guid);
+            if (id !== null) hvacDbIdsFromGuids.push(id);
+          }
+          const archDbIdsFromGuids = [];
+          for (const guid of this._archIfcGUIDs) {
+            const id = await this.findDbIdByIfcGUID(guid);
+            if (id !== null) archDbIdsFromGuids.push(id);
+          }
+          console.log('GUID-based dbIds:', {
+            hvac: hvacDbIdsFromGuids.length,
+            arch: archDbIdsFromGuids.length,
+            floors: archByType.geschossdecke.length,
+            slabs: archByType.slab.length,
+            roofs: archByType.roof.length,
+            doors: archByType.door.length,
+            sanitary: archByType.sanitary.length,
+            lights: archByType.light.length,
+            soil: archByType.soil.length
+          });
+          const hvacSet = new Set([...Object.values(hvacByType).flat(), ...hvacDbIdsFromGuids]);
+          const archSet = new Set([...Object.values(archByType).flat(), ...archDbIdsFromGuids]);
+          this._hvacDbIds = [...hvacSet];
+          this._archDbIds = [...archSet].filter(id => !hvacSet.has(id));
+          console.log('Final sets:', {
+            hvacDbIds: this._hvacDbIds.length,
+            archDbIds: this._archDbIds.length,
+            floorDbIds: archByType.geschossdecke.length,
+            slabDbIds: archByType.slab.length,
+            roofDbIds: archByType.roof.length,
+            doorDbIds: archByType.door.length,
+            sanitaryDbIds: archByType.sanitary.length,
+            lightDbIds: archByType.light.length,
+            soilDbIds: archByType.soil.length
+          });
+          const dynRadiators = hvacByType.radiator;
+          const radiatorGuids = Object.keys(this.componentTypes).filter(g => this.componentTypes[g] === 'radiator');
+          const radiatorDbIdsFromGuids = [];
+          for (const g of radiatorGuids) {
+            const rid = await this.findDbIdByIfcGUID(g);
+            if (rid !== null) radiatorDbIdsFromGuids.push(rid);
+          }
+          const uniqueRadiators = new Set([...dynRadiators, ...radiatorDbIdsFromGuids]);
+          console.log('[HVAC] Radiators found — parameter:', dynRadiators.length,
+            '| override GUIDs:', radiatorDbIdsFromGuids.length,
+            '| unique total:', uniqueRadiators.size);
+        } catch (err) {
+          console.error('Error in computeDbIdSets:', err);
+          this._allDbIds = [];
+          this._hvacDbIds = [];
+          this._archDbIds = [];
+        }
+      }
+      async ensureSetsReady() {
+        try {
+          if (!this.viewer.model || !this.viewer.model.getData() || !this.viewer.model.getData().instanceTree) {
+            console.log('Waiting for geometry to load...');
+            await new Promise(resolve => {
+              const handler = () => {
+                console.log('Geometry loaded, proceeding with sets');
+                this.viewer.removeEventListener(Autodesk.Viewing.GEOMETRY_LOADED_EVENT, handler);
+                resolve();
+              };
+              this.viewer.addEventListener(Autodesk.Viewing.GEOMETRY_LOADED_EVENT, handler);
+            });
+          }
+          if (!this._allDbIds.length || !this._hvacDbIds.length || !this._archDbIds.length) {
+            console.log('Computing dbId sets...');
+            await this.computeDbIdSets();
+          }
+        } catch (err) {
+          console.error('Error in ensureSetsReady:', err);
+        }
+      }
+      getAllDbIds() {
+        return new Promise(resolve => {
+          try {
+            const it = this.viewer.model?.getData()?.instanceTree;
+            if (!it) {
+              console.warn('Instance tree not available');
+              return resolve([]);
+            }
+            const all = [];
+            const rootId = it.getRootId();
+            const stack = [rootId];
+            while (stack.length) {
+              const id = stack.pop();
+              all.push(id);
+              it.enumNodeChildren(id, cid => { stack.push(cid); });
+            }
+            resolve(all);
+          } catch (err) {
+            console.error('Error in getAllDbIds:', err);
+            resolve([]);
+          }
+        });
+      }
+      async findDbIdByIfcGUID(ifcGuid) {
+        return new Promise((resolve) => {
+          try {
+            if (!this.viewer.model) {
+              console.warn(`No model available for IfcGUID ${ifcGuid}`);
+              return resolve(null);
+            }
+            this.viewer.search(ifcGuid, dbIds => {
+              if (dbIds.length > 0) {
+                resolve(dbIds[0]);
+              } else {
+                this.viewer.search(ifcGuid.toLowerCase(), dbIdsLower => {
+                  resolve(dbIdsLower.length > 0 ? dbIdsLower[0] : null);
+                }, () => resolve(null), ['IfcGUID']);
+              }
+            }, () => resolve(null), ['IfcGUID']);
+          } catch (err) {
+            console.warn(`Error searching for IfcGUID ${ifcGuid}:`, err);
+            resolve(null);
+          }
+        });
+      }
+      getPropertyAsync(dbId, name) {
+        return new Promise(resolve => {
+          try {
+            if (!this.viewer.model) return resolve(null);
+            this.viewer.getProperties(dbId, props => {
+              const match = props.properties.find(p => p.displayName === name);
+              resolve(match ? match.displayValue : null);
+            }, () => resolve(null));
+          } catch (err) {
+            console.warn(`Error in getPropertyAsync for dbId ${dbId} with ${name}:`, err);
+            resolve(null);
+          }
+        });
+      }
+      getAllProperties(dbId) {
+        return new Promise(resolve => {
+          try {
+            if (!this.viewer.model) return resolve([]);
+            this.viewer.getProperties(dbId, props => resolve(props.properties || []), () => resolve([]));
+          } catch (err) {
+            console.warn(`Error in getAllProperties for dbId ${dbId}:`, err);
+            resolve([]);
+          }
+        });
+      }
+      async onSelectionChanged(event) {
+        try {
+          const dbId = event.dbIdArray && event.dbIdArray[0];
+          const panel = document.getElementById('design-info');
+          panel.style.display = 'none';
+          if (!dbId || !this.viewer.model) return;
+          const ifcGuid = await this.getPropertyAsync(dbId, 'IfcGUID');
+          if (!ifcGuid) return;
+          const type = await this._resolveTypeFor(dbId, ifcGuid);
+
+          /* Include 'slab' and 'roof' in allowed types */
+          if (!type || !['radiator', 'pipe', 'fitting', 'heat_generator', 'geschossdecke', 'slab', 'roof', 'wand', 'door', 'window', 'stair', 'light', 'sanitary', 'soil'].includes(type)) return;
+
+          const props = await this.getAllProperties(dbId);
+          if (!props || props.length === 0) return;
+          let propList, title;
+          if (type === 'radiator') { propList = this.radiatorDesignProperties; title = 'Heizkörper'; }
+          else if (type === 'pipe') { propList = this.pipeDesignProperties; title = 'Rohr'; }
+          else if (type === 'fitting') { propList = this.fittingDesignProperties; title = 'Fitting'; }
+          else if (type === 'heat_generator') { propList = this.heatGeneratorDesignProperties; title = 'Wärmeerzeuger'; }
+          else if (type === 'geschossdecke') { propList = this.geschossdeckeDesignProperties; title = 'Raum'; }
+          else if (type === 'slab') { propList = this.slabDesignProperties; title = 'Geschossdecke'; }
+          else if (type === 'roof') { propList = this.roofDesignProperties; title = 'Dach'; }
+          else if (type === 'wand') { propList = this.wandDesignProperties; title = 'Wand'; }
+          else if (type === 'door') { propList = this.doorDesignProperties; title = 'Tür'; }
+          else if (type === 'window') { propList = this.windowDesignProperties; title = 'Fenster'; }
+          else if (type === 'stair') { propList = this.stairDesignProperties; title = 'Treppe'; }
+          else if (type === 'light') { propList = this.lightDesignProperties; title = 'Leuchte'; }
+          else if (type === 'sanitary') { propList = this.sanitaryDesignProperties; title = 'Sanitärelement'; }
+          else if (type === 'soil') { propList = this.soilDesignProperties; title = 'Außenbereich'; }
+          const filteredProps = props.filter(p => Array.isArray(propList) ? propList.some(item => item.property === p.displayName) : false);
+          const body = filteredProps.length
+            ? filteredProps.map(p => {
+                const propDef = Array.isArray(propList) ? propList.find(item => item.property === p.displayName) : null;
+                const label = propDef ? propDef.label : p.displayName;
+                const unit = propDef && propDef.unit ? propDef.unit : '';
+                let value = p.displayValue;
+if (typeof value === 'number') {
+  value = (propDef && propDef.property === 'LIN_HT_KV_VALUE_THV')
+    ? fmt(value * 3.6)   // L/s -> m³/h
+    : fmt(value);
+}
+                return `<div class="prop"><b>${label}</b><span class="val">${value !== undefined && value !== null ? value + (unit ? ' ' + unit : '') : 'N/A'}</span></div>`;
+              }).join('')
+            : '<i>Keine Daten verfügbar</i>';
+          const screen = getScreenCoordinates(this.viewer, dbId, this._lastMouseEvent);
+          if (!screen) return;
+          panel.innerHTML = `<h3>${title}</h3><div class="props">${body}</div>`;
+          panel.style.left = `${screen.x + 10}px`;
+          panel.style.top = `${screen.y + 10}px`;
+          panel.style.display = 'block';
+          let isDragging = false, initialX, initialY;
+          panel.onmousedown = (e) => {
+            if (e.target.tagName === 'H3') {
+              isDragging = true;
+              initialX = e.clientX - panel.offsetLeft;
+              initialY = e.clientY - panel.offsetTop;
+            }
+          };
+          document.onmousemove = (e) => {
+            if (isDragging) {
+              e.preventDefault();
+              let currentX = e.clientX - initialX;
+              let currentY = e.clientY - initialY;
+              currentX = Math.max(0, Math.min(currentX, window.innerWidth - panel.offsetWidth));
+              currentY = Math.max(0, Math.min(currentY, window.innerHeight - panel.offsetHeight));
+              panel.style.left = `${currentX}px`;
+              panel.style.top = `${currentY}px`;
+            }
+          };
+          document.onmouseup = () => { isDragging = false; };
+        } catch (err) {
+          console.error('Error in onSelectionChanged:', err, 'dbId:', event.dbIdArray);
+        }
+      }
+      updateButtonState(btn, visible) {
+        try {
+          if (btn && btn.container) {
+            if (visible) btn.addClass('visible'); else btn.removeClass('visible');
+          }
+        } catch (err) {
+          console.error('Error updating button state:', err);
+        }
+      }
+      async onToolbarCreated(toolbar) {
+        try {
+          const NAV_ID = (Autodesk.Viewing.TOOLBAR && Autodesk.Viewing.TOOLBAR.NAVTOOLSID) || 'navTools';
+          const navToolsGroup = toolbar.getControl(NAV_ID);
+          if (navToolsGroup) toolbar.removeControl(NAV_ID);
+          const MODEL_ID = (Autodesk.Viewing.TOOLBAR && Autodesk.Viewing.TOOLBAR.MODELTOOLSID) || 'modelTools';
+          const modelToolsGroup = toolbar.getControl(MODEL_ID);
+          if (modelToolsGroup) toolbar.removeControl(MODEL_ID);
+          let hostGroup = toolbar.getControl('hvac-visibility-group');
+          if (!hostGroup) {
+            hostGroup = new Autodesk.Viewing.UI.ControlGroup('hvac-visibility-group');
+            toolbar.addControl(hostGroup);
+          }
+          const makeBtn = (id, tip, svgPath, onClick) => {
+            try {
+              const existing = hostGroup.getControl(id);
+              if (existing) hostGroup.removeControl(existing);
+              const b = new Autodesk.Viewing.UI.Button(id);
+              b.setToolTip(tip);
+              const iconElement = b.container.querySelector('.adsk-button-icon') || document.createElement('div');
+              iconElement.className = 'adsk-button-icon custom-icon';
+              iconElement.innerHTML = `<svg class="custom-icon" viewBox="0 0 16 16"><path d="${svgPath}"/></svg>`;
+              if (!b.container.querySelector('.adsk-button-icon')) b.container.appendChild(iconElement);
+              b.onClick = onClick;
+              hostGroup.addControl(b);
+              return b;
+            } catch (err) {
+              console.error(`Error creating button ${id}:`, err);
+              return null;
+            }
+          };
+          const toggleArch = async () => {
+            try {
+              await this.ensureSetsReady();
+              if (!this._archDbIds || this._archDbIds.length === 0) {
+                console.warn('No architectural dbIds to toggle');
+                return;
+              }
+              this._archVisible = !this._archVisible;
+              this.viewer.setThemingColor(this._archDbIds, null);
+              this._archVisible ? this.viewer.show(this._archDbIds) : this.viewer.hide(this._archDbIds);
+              this.updateButtonState(this._toggleArchBtn, this._archVisible);
+            } catch (err) {
+              console.error('Error toggling architecture visibility:', err);
+            }
+          };
+          const toggleHvac = async () => {
+            try {
+              await this.ensureSetsReady();
+              if (!this._hvacDbIds || this._hvacDbIds.length === 0) {
+                console.warn('No HVAC dbIds to toggle');
+                return;
+              }
+              this._heatingVisible = !this._heatingVisible;
+              this.viewer.setThemingColor(this._hvacDbIds, null);
+              this._heatingVisible ? this.viewer.show(this._hvacDbIds) : this.viewer.hide(this._hvacDbIds);
+              this.updateButtonState(this._toggleHvacBtn, this._heatingVisible);
+            } catch (err) {
+              console.error('Error toggling HVAC visibility:', err);
+            }
+          };
+          this._toggleArchBtn = makeBtn(
+            'toggle-arch',
+            'Architektur ein/aus',
+            'M8 1l6 5v8.5A1.5 1.5 0 0 1 12.5 16H9.5v-5h-3v5H3.5A1.5 1.5 0 0 1 2 14.5V6l6-5z',
+            toggleArch
+          );
+          this._toggleHvacBtn = makeBtn(
+            'toggle-hvac',
+            'Heizung ein/aus',
+            'M6 2a2 2 0 0 1 4 0v6.086a3.5 3.5 0 1 1-4 0V2zM7 2a1 1 0 0 1 2 0v6.5a2.5 2.5 0 1 1-2 0V2z',
+            toggleHvac
+          );
+          this.updateButtonState(this._toggleArchBtn, this._archVisible);
+          this.updateButtonState(this._toggleHvacBtn, this._heatingVisible);
+        } catch (err) {
+          console.error('Error creating toolbar:', err);
+          alert('Failed to create toolbar: ' + err.message);
+        }
+      }
+    }
+    Autodesk.Viewing.theExtensionManager.registerExtension('HvacDesignPropsExtension', HvacDesignPropsExtension);
+    async function getAccessToken() {
+      try {
+        const res = await fetch('https://forge-token-server-1.onrender.com/api/token', { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`Token fetch failed: ${res.status} ${res.statusText}`);
+        const data = await res.json();
+        if (!data.access_token) throw new Error('No access token in response');
+        return data.access_token;
+      } catch (e) {
+        console.error('Token fetch error:', e.message);
+        throw e;
+      }
+    }
+    async function launchViewer() {
+      let accessToken;
+      try {
+        accessToken = await getAccessToken();
+      } catch (e) {
+        alert('Failed to fetch Forge token: ' + e.message);
+        return;
+      }
+      Autodesk.Viewing.Initializer({ env: 'AutodeskProduction', accessToken }, () => {
+        try {
+          const viewer = new Autodesk.Viewing.GuiViewer3D(document.getElementById('viewer'));
+          viewer.start();
+		  const documentId = 'urn:dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6ZHcwZ2V5N21ucmQ4bGxydHN3ZjZyMWZqc3lnd2J5dnN5cmZlYWNsYTBteWs3Z2VoLWJhc2ljLWFwcC9NZWhyZmFtaWxpZW5oYXVzXzIwMFdFX3Y4LnJ2dA';
+          Autodesk.Viewing.Document.load(documentId, async (doc) => {
+            try {
+              const viewables = doc.getRoot().search({ type: 'geometry' });
+              const selector = document.getElementById('viewable-selector');
+              selector.innerHTML = '';
+              viewables.forEach((viewable, index) => {
+                const option = document.createElement('option');
+                option.value = index;
+                const viewName = typeof viewable.getName === 'function' ? viewable.getName() : (viewable.data.name || 'Unnamed View');
+                option.textContent = `[${viewable.data.role.toUpperCase()}] ${viewName}`;
+                selector.appendChild(option);
+              });
+              let extInstance = null;
+              async function loadView(index) {
+                const selected = viewables[index];
+                try {
+                  const panel = document.getElementById('design-info');
+                  panel.style.display = 'none';
+                  if (extInstance) {
+                    viewer.unloadExtension('HvacDesignPropsExtension');
+                    extInstance = null;
+                  }
+                  await viewer.loadDocumentNode(doc, selected);
+                  const onGeom = () => {
+                    viewer.impl.camera.isPerspective = selected.data.role !== '2d';
+                    viewer.impl.invalidate(true);
+                    viewer.removeEventListener(Autodesk.Viewing.GEOMETRY_LOADED_EVENT, onGeom);
+                  };
+                  viewer.addEventListener(Autodesk.Viewing.GEOMETRY_LOADED_EVENT, onGeom);
+                  extInstance = await viewer.loadExtension('HvacDesignPropsExtension');
+                  extInstance._archVisible = true;
+                  extInstance._heatingVisible = true;
+                  await extInstance.ensureSetsReady();
+                  extInstance.viewer.show(extInstance._archDbIds);
+                  extInstance.viewer.show(extInstance._hvacDbIds);
+                  if (viewer.toolbar && typeof extInstance.onToolbarCreated === 'function') {
+                    const existing = viewer.toolbar.getControl('hvac-visibility-group');
+                    if (existing) viewer.toolbar.removeControl(existing);
+                    extInstance.onToolbarCreated(viewer.toolbar);
+                  }
+                  extInstance.updateButtonState(extInstance._toggleArchBtn, extInstance._archVisible);
+                  extInstance.updateButtonState(extInstance._toggleHvacBtn, extInstance._heatingVisible);
+                } catch (err) {
+                  console.error('Error loading viewable:', err);
+                  alert('Failed to load model view. Check the URN or translation status.');
+                }
+              }
+              viewer.loadExtension('HvacDesignPropsExtension').then(ext => {
+                extInstance = ext;
+                loadView(0);
+              }).catch(err => {
+                console.error('Error loading extension:', err);
+                alert('Failed to load HVAC extension: ' + err.message);
+              });
+              selector.addEventListener('change', () => {
+                const idx = parseInt(selector.value, 10);
+                loadView(idx);
+              });
+            } catch (err) {
+              console.error('Document load error:', err);
+              alert('Failed to load model. Please verify the URN and try again.');
+            }
+          }, err => {
+            console.error('Document load error:', err);
+            alert('Failed to load model. Please verify the URN and try again.');
+          });
+        } catch (err) {
+          console.error('Viewer initialization error:', err);
+          alert('Failed to initialize viewer: ' + err.message);
+        }
+      });
+    }
+    launchViewer().catch(err => {
+      console.error('Launch viewer failed:', err);
+      alert('Failed to launch viewer: ' + err.message);
+    });
+  </script>
+</body>
+</html>
 
